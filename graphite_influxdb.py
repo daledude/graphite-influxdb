@@ -8,6 +8,8 @@ except ImportError:
     from graphite.intervals import Interval, IntervalSet
     from graphite.node import LeafNode, BranchNode
 
+from django.core.cache import cache
+
 from influxdb import InfluxDBClient
 
 
@@ -71,10 +73,12 @@ class InfluxdbReader(object):
 
 
 class InfluxdbFinder(object):
-    __slots__ = ('client', 'logger')
+    __slots__ = ('client', 'logger', 'series', 'seriesCacheKey')
 
     def __init__(self, config=None):
         self.client = config_to_client(config)
+        self.series = None
+        self.seriesCacheKey = 'INFLUXDBSERIES'
         # from graphite_api.app import app
         # self.logger = app.logger
         logging.basicConfig()
@@ -84,12 +88,20 @@ class InfluxdbFinder(object):
     def find_nodes(self, query):
         # query.pattern is basically regex, though * should become [^\.]+ and . \.
         # but list series doesn't support pattern matching/regex yet
+        self.logger.info(query)
         regex = query.pattern.replace('.', '\.').replace('*', '[^\.]+')
         self.logger.info("find_nodes query: %s -> %s" % (query.pattern, regex))
         regex = re.compile(regex)
-        series = self.client.query("list series")
-        for s in series:
-            self.logger.info("matching %s" % s['name'])
+        series = cache.get(self.seriesCacheKey)
+        if series is None:
+            self.logger.info('CACHE MISS: list series')
+            series = self.client.query('list series')
+            cache.set(self.seriesCacheKey, series, 300)
+        else:
+            self.logger.info('CACHE HIT: list series')
+
+        #for s in series:
+            #self.logger.info("matching %s" % s['name'])
         series = [s['name'] for s in series if regex.match(s['name']) is not None]
         seen_branches = set()
         # for leaf "a.b.c" we should yield branches "a" and "a.b"
